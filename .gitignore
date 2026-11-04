@@ -1,0 +1,9 @@
+node_modules/
+.env
+.env.*
+!.env.example
+deploy/.env
+data/
+*.log
+.DS_Store
+test/e2e/.env.e2e

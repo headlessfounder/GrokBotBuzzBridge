@@ -1,0 +1,132 @@
+# Local end-to-end test: a real Buzz relay (the same pinned 0.2.1 image as
+# production), the bridge, and a mock Grok Bot that answers through the
+# bridge's connector. Run it with test/e2e/run.sh, not by hand.
+name: gbb-e2e
+
+x-relay-image: &relay-image ghcr.io/block/buzz@sha256:4e31b7c7abb7d00b6f513dc559e58d2b980416f1dc400aa01bcf762cf2989cfc
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: buzz
+      POSTGRES_USER: buzz
+      POSTGRES_PASSWORD: e2e-postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U buzz -d buzz"]
+      interval: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "e2e-redis"]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a e2e-redis ping | grep -q PONG"]
+      interval: 3s
+      retries: 30
+
+  # MinIO images are no longer anonymously pullable, so the test stack uses
+  # SeaweedFS as its S3-compatible store. Production keeps its own storage.
+  s3:
+    image: chrislusf/seaweedfs:3.97
+    command: ["server", "-dir=/data", "-s3", "-s3.port=8333", "-s3.config=/etc/seaweedfs/s3.json"]
+    configs:
+      - source: s3_identities
+        target: /etc/seaweedfs/s3.json
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9333/cluster/status"]
+      interval: 3s
+      retries: 40
+
+  s3-init:
+    image: chrislusf/seaweedfs:3.97
+    depends_on:
+      s3:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/init/s3-init.sh"]
+    volumes:
+      - ./s3-init.sh:/init/s3-init.sh:ro
+    restart: "no"
+
+  relay:
+    image: *relay-image
+    platform: linux/amd64
+    environment:
+      BUZZ_BIND_ADDR: 0.0.0.0:3000
+      BUZZ_HEALTH_PORT: "8080"
+      BUZZ_DOMAIN: relay
+      RELAY_URL: ws://relay:3000
+      BUZZ_MEDIA_BASE_URL: http://relay:3000/media
+      BUZZ_MEDIA_SERVER_DOMAIN: relay
+      BUZZ_CORS_ORIGINS: http://relay:3000
+      BUZZ_REQUIRE_AUTH_TOKEN: "true"
+      BUZZ_REQUIRE_RELAY_MEMBERSHIP: "false"
+      BUZZ_ALLOW_NIP_OA_AUTH: "true"
+      BUZZ_AUTO_MIGRATE: "true"
+      BUZZ_GIT_CONFORMANCE_PROBE: "false"
+      RELAY_OWNER_PUBKEY: ${E2E_OWNER_PUBKEY:?run test/e2e/run.sh}
+      BUZZ_RELAY_PRIVATE_KEY: ${E2E_RELAY_SECRET:?run test/e2e/run.sh}
+      BUZZ_GIT_HOOK_HMAC_SECRET: ${E2E_RELAY_SECRET:?run test/e2e/run.sh}
+      DATABASE_URL: postgres://buzz:e2e-postgres@postgres:5432/buzz
+      REDIS_URL: redis://:e2e-redis@redis:6379
+      BUZZ_S3_ENDPOINT: http://s3:8333
+      BUZZ_S3_ADDRESSING_STYLE: path
+      BUZZ_S3_ACCESS_KEY: e2e-minio-access
+      BUZZ_S3_SECRET_KEY: e2e-minio-secret
+      BUZZ_S3_BUCKET: e2e-media
+      BUZZ_GIT_REPO_PATH: /data/git
+      RUST_LOG: buzz_relay=info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      s3-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/8080; printf \"GET /_readiness HTTP/1.1\\r\\nHost: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n\" >&3; grep -q \"200 OK\" <&3'"]
+      interval: 5s
+      retries: 60
+      start_period: 20s
+
+  bridge:
+    image: ${E2E_BRIDGE_IMAGE:-grokbot-buzz-bridge:dev}
+    environment:
+      BUZZ_RELAY_URL: ws://relay:3000
+      BRIDGE_PUBLIC_URL: http://bridge:8787
+      BRIDGE_ALLOW_HTTP_PUBLIC_URL: "true"
+      BRIDGE_COMMUNITY_NAME: E2E community
+      BRIDGE_BOT_NAME: Grok Bot
+      BRIDGE_ADMINS: ${E2E_OWNER_PUBKEY:?run test/e2e/run.sh}
+      BRIDGE_OPEN_CHANNELS: ${E2E_OPEN_CHANNEL:-}
+      BRIDGE_RATE_LIMIT_PER_HOUR: "20"
+      BRIDGE_TASK_TIMEOUT_MINUTES: "3"
+      BRIDGE_CONNECTOR_TOKEN: e2e-connector-token
+      GROKBOT_WEBHOOK_URL: http://mockgrok:9000/webhook
+      GROKBOT_WEBHOOK_KEY: e2e-webhook-key
+      BRIDGE_LOG_LEVEL: info
+    volumes:
+      - bridge-data:/data
+    depends_on:
+      relay:
+        condition: service_healthy
+
+  mockgrok:
+    image: ${E2E_BRIDGE_IMAGE:-grokbot-buzz-bridge:dev}
+    entrypoint: ["node", "--no-warnings", "/app/src/e2e-mock.ts"]
+    command: []
+    working_dir: /app
+    environment:
+      MOCK_WEBHOOK_KEY: e2e-webhook-key
+      MOCK_CONNECTOR_URL: http://bridge:8787/mcp
+      MOCK_CONNECTOR_TOKEN: e2e-connector-token
+    volumes:
+      - ./mock-grokbot.ts:/app/src/e2e-mock.ts:ro
+
+volumes:
+  bridge-data:
+
+configs:
+  s3_identities:
+    content: |
+      {"identities":[{"name":"e2e","credentials":[{"accessKey":"e2e-minio-access","secretKey":"e2e-minio-secret"}],"actions":["Admin","Read","Write","List","Tagging"]}]}

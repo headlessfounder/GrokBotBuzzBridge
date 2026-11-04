@@ -1,0 +1,12 @@
+GrokBotBuzzBridge
+Copyright 2026 Lucas Wyman and GrokBotBuzzBridge contributors
+
+This product is licensed under the Apache License, Version 2.0.
+
+The container image includes the `buzz` and `buzz-acp` programs, built from
+source from Block's Buzz project (https://github.com/block/buzz), which is
+licensed under the Apache License, Version 2.0. Copyright 2026 Block, Inc.
+
+This project is not affiliated with, endorsed by, or sponsored by xAI, Block,
+or the Buzz project. "Grok" and "Grok Bot" are trademarks of their respective
+owners and are used here only to describe what the software connects to.

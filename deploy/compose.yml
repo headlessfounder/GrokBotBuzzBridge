@@ -1,0 +1,32 @@
+# GrokBotBuzzBridge on a server with Docker.
+#
+#   cp ../.env.example .env      # then edit .env
+#   docker compose up -d
+#   docker compose exec bridge gbb status
+#
+# The bridge listens on 127.0.0.1:8787 only. Put a reverse proxy or tunnel in
+# front of it for the public https address (docs/install/04-public-address.md).
+name: grokbot-buzz-bridge
+
+services:
+  bridge:
+    # Published by the release workflow. To build from source instead (needs
+    # ~3 GB RAM and 5-25 minutes), comment out `image` and uncomment `build`.
+    image: ghcr.io/headlessfounder/grokbotbuzzbridge:0.1.0
+    # build:
+    #   context: ..
+    env_file:
+      - .env
+    volumes:
+      - bridge-data:/data
+    ports:
+      - "127.0.0.1:${BRIDGE_HOST_PORT:-8787}:8787"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  bridge-data:

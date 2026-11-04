@@ -1,0 +1,9 @@
+.git
+node_modules
+test
+docs
+*.md
+!grokbot/*.md
+.env
+.env.*
+data
